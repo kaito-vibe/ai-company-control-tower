@@ -132,7 +132,7 @@ NODE_ENV=production node dist/index.cjs
 ```
 
 ### PIN Gate
-The app is protected by a PIN entry screen. Default PIN: `7128`
+The app is protected by a PIN entry screen. Default PIN: `4321`
 
 ## Pages Overview
 
