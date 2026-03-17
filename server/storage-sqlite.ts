@@ -192,6 +192,16 @@ export class SQLiteStorage implements IStorage {
   }
 
   async createProject(project: InsertProject): Promise<Project> {
+    // Deduplication guard: reject projects with identical title created within the last 5 minutes
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const duplicate = db.prepare(
+      `SELECT id FROM projects WHERE title = ? AND created_at > ? AND status NOT IN ('cancelled') LIMIT 1`
+    ).get(project.title, fiveMinAgo) as any;
+    if (duplicate) {
+      console.log(`[dedup] Blocked duplicate project: "${project.title}" — matches existing project #${duplicate.id}`);
+      return (await this.getProject(duplicate.id))!;
+    }
+
     const info = db.prepare('INSERT INTO projects (title, description, status, assigned_agent_id, meeting_id, goal_id, priority, progress, total_tasks, completed_tasks, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
       project.title, project.description ?? '', project.status ?? 'backlog', project.assignedAgentId ?? null, project.meetingId ?? null, project.goalId ?? null, project.priority ?? 'medium', project.progress ?? 0, project.totalTasks ?? 0, project.completedTasks ?? 0, project.createdAt
     );
@@ -256,6 +266,16 @@ export class SQLiteStorage implements IStorage {
   }
 
   async createAgentTask(task: InsertAgentTask): Promise<AgentTask> {
+    // Deduplication guard: reject tasks with identical title + agent created within the last 5 minutes
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const duplicate = db.prepare(
+      `SELECT id FROM agent_tasks WHERE title = ? AND assigned_agent_id = ? AND created_at > ? AND status NOT IN ('rejected', 'cancelled') LIMIT 1`
+    ).get(task.title, task.assignedAgentId, fiveMinAgo) as any;
+    if (duplicate) {
+      console.log(`[dedup] Blocked duplicate task: "${task.title}" (agent ${task.assignedAgentId}) — matches existing task #${duplicate.id}`);
+      return (await this.getAgentTask(duplicate.id))!;
+    }
+
     const info = db.prepare('INSERT INTO agent_tasks (title, description, assigned_agent_id, status, type, proposal, proposed_actions, execution_log, project_id, meeting_id, parent_task_id, depends_on, deliverables, collaborators, discussion_thread, workflow_stage, priority, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
       task.title, task.description, task.assignedAgentId, task.status ?? 'pending', task.type ?? 'general',
       task.proposal ?? null, task.proposedActions ?? null, task.executionLog ?? null,

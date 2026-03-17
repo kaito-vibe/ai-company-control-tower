@@ -13,7 +13,8 @@ import { OnboardingWizard } from "@/components/onboarding-wizard";
 import { lazy, Suspense, useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/utils";
-import { Loader2, Lock, ShieldCheck } from "lucide-react";
+import { Loader2, Lock, ShieldCheck, Pause, Play } from "lucide-react";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 // Lazy-loaded pages
 const Dashboard = lazy(() => import("@/pages/dashboard"));
@@ -90,6 +91,63 @@ function ThemeToggle() {
         </svg>
       )}
     </button>
+  );
+}
+
+function SystemPauseButton() {
+  const { data: status, isLoading } = useQuery<{
+    paused: boolean;
+    pausedAt: string | null;
+    creditPaused: boolean;
+    activeAICalls: number;
+    maxConcurrent: number;
+  }>({
+    queryKey: ["/api/system/status"],
+    refetchInterval: 5000,
+  });
+
+  const pauseMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/system/pause"),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/system/status"] }),
+  });
+
+  const resumeMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/system/resume"),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/system/status"] }),
+  });
+
+  if (isLoading || !status) return null;
+
+  const isPaused = status.paused;
+  const pausedSince = status.pausedAt ? new Date(status.pausedAt) : null;
+  const elapsed = pausedSince ? Math.round((Date.now() - pausedSince.getTime()) / 60000) : 0;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          onClick={() => isPaused ? resumeMutation.mutate() : pauseMutation.mutate()}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all ${
+            isPaused
+              ? "bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 animate-pulse"
+              : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-red-500/15 hover:text-red-400 hover:border-red-500/30"
+          }`}
+          disabled={pauseMutation.isPending || resumeMutation.isPending}
+        >
+          {isPaused ? (
+            <><Play className="h-3 w-3" /> Paused{elapsed > 0 ? ` (${elapsed}m)` : ""}</>
+          ) : (
+            <><Pause className="h-3 w-3" /> Running</>
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">
+        {isPaused
+          ? "System paused — all task processing frozen. Click to resume."
+          : `System running — ${status.activeAICalls}/${status.maxConcurrent} AI calls active. Click to pause all.`
+        }
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -266,6 +324,7 @@ export default function App() {
                   <header className="flex items-center justify-between px-3 py-2 border-b shrink-0">
                     <SidebarTrigger data-testid="button-sidebar-toggle" />
                     <div className="flex items-center gap-2">
+                      <SystemPauseButton />
                       <CommandSearch />
                       <NotificationCenter />
                       <ThemeToggle />

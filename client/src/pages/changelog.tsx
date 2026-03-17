@@ -7,7 +7,8 @@ import {
   Keyboard, GripVertical, Cpu, Users, ClipboardCheck, Plug, HelpCircle,
   Shield, Rocket, Target, FolderKanban, AlertTriangle, Network, ListTodo,
   CalendarClock, BookOpen, Clock, UserSquare, Database, Settings2, Activity,
-  Zap, Layers, FileText, Lock, Globe, Palette, Smartphone, CheckCircle2
+  Zap, Layers, FileText, Lock, Globe, Palette, Smartphone, CheckCircle2,
+  Wrench, Code2, MessageCircle, ShieldCheck, HardDrive, Link2
 } from "lucide-react";
 
 const features = [
@@ -106,6 +107,11 @@ const features = [
       { name: "Company Timeline", desc: "Historical event log of all company activities" },
       { name: "Budget Cut Scenario", desc: "What-if analysis for budget reductions" },
       { name: "Enhanced Scenarios", desc: "Cross-linked agent names and project references" },
+      { name: "AI Strategy Proposals", desc: "AI proposes OKR objectives and KRs using full company context" },
+      { name: "Auto-Calculated Progress", desc: "Objective progress derived from project tasks + KR completion" },
+      { name: "Deduplication Guards", desc: "4-layer protection against duplicate tasks, projects, and breakdowns" },
+      { name: "Strategy Sync", desc: "Auto-create recurring tasks from strategy objectives" },
+      { name: "Derive Projects", desc: "AI-generated project proposals from objectives" },
     ],
   },
   {
@@ -120,6 +126,65 @@ const features = [
       { name: "Client Health Scoring", desc: "Auto-computed health from projects and risks" },
       { name: "Client Revenue Tracking", desc: "Total revenue per client from linked projects" },
       { name: "Create Project from Client", desc: "Quick project creation with client pre-linked" },
+    ],
+  },
+  {
+    category: "Agent Tools & Execution",
+    icon: Wrench,
+    items: [
+      { name: "Tool-Use Framework", desc: "13 built-in tools agents can invoke during task execution" },
+      { name: "Web Search Tool", desc: "Agents can search the web for real-time information" },
+      { name: "URL Fetch Tool", desc: "Agents can read and extract content from any URL" },
+      { name: "Document Writing", desc: "Agents create versioned artifacts (specs, plans, code)" },
+      { name: "Cross-Agent Queries", desc: "Agents can ask other agents questions synchronously" },
+      { name: "Code Execution Sandbox", desc: "Run JavaScript, Python, or Bash in isolated environments" },
+      { name: "Company Data Queries", desc: "Agents query internal metrics (projects, tasks, budgets)" },
+      { name: "Tool Execution Logging", desc: "Full audit trail of every tool call with params and results" },
+    ],
+  },
+  {
+    category: "Artifacts & Knowledge",
+    icon: FileText,
+    items: [
+      { name: "Shared Artifact Store", desc: "Documents, code, specs stored with versioning" },
+      { name: "Artifact Versioning", desc: "Track changes across artifact revisions" },
+      { name: "Cross-Agent Artifact Access", desc: "Any agent can read artifacts created by others" },
+      { name: "Artifact Search", desc: "Search across all artifacts by title, type, or content" },
+      { name: "Task Artifacts", desc: "View all deliverables produced by a specific task" },
+      { name: "Project Artifacts", desc: "Browse all artifacts within a project" },
+    ],
+  },
+  {
+    category: "Agent Communication",
+    icon: MessageCircle,
+    items: [
+      { name: "Agent-to-Agent Messaging", desc: "Async messages between agents with context" },
+      { name: "Synchronous Agent Queries", desc: "Ask another agent a question and get immediate AI response" },
+      { name: "Peer Review Requests", desc: "Agents can request review of their work from colleagues" },
+      { name: "Communication Feed", desc: "Global feed of all agent-to-agent interactions" },
+      { name: "Context Injection", desc: "Recent messages included in agent's task execution context" },
+    ],
+  },
+  {
+    category: "Quality & Verification",
+    icon: ShieldCheck,
+    items: [
+      { name: "Self-Verification Loop", desc: "Agents auto-check their proposals before submission (0-1 score)" },
+      { name: "Auto-Revision", desc: "Low-scoring proposals auto-revised up to 2 rounds" },
+      { name: "Quality Scoring", desc: "Every task gets a quality score from verification" },
+      { name: "Verification Statistics", desc: "Pass rates, average scores, revision frequency" },
+      { name: "Configurable Thresholds", desc: "Set minimum quality score and max revision rounds" },
+    ],
+  },
+  {
+    category: "Infrastructure",
+    icon: HardDrive,
+    items: [
+      { name: "SQLite Database", desc: "ACID transactions replacing JSON file storage" },
+      { name: "WAL Mode", desc: "Write-Ahead Logging for concurrent read/write performance" },
+      { name: "28 Database Tables", desc: "Proper relational schema for all entities" },
+      { name: "Data Migration", desc: "Automated JSON → SQLite migration preserving all data" },
+      { name: "200 API Endpoints", desc: "Comprehensive REST API covering all operations" },
     ],
   },
   {
@@ -305,6 +370,58 @@ const releaseLog = [
       "Under review tasks counted in resource utilization and parallel limits",
     ],
   },
+  {
+    version: "5.3.0",
+    date: "Mar 14, 2026",
+    title: "Autonomous Meetings & Roadmap",
+    changes: [
+      "Fully autonomous meeting execution — agents discuss, debate, and reach consensus",
+      "Meeting-to-project pipeline — meetings auto-generate projects and tasks",
+      "Roadmap auto-planner with AI-driven project scheduling",
+      "Budget controls on roadmap with token cost tracking",
+      "CEO approval queue for autonomous proposals (approve/reject/defer)",
+      "Strategy sync — auto-align projects to OKR goals",
+      "Company health monitoring with auto-remediation projects",
+      "Credit pause system with exponential backoff on API quota exhaustion",
+      "Queue processor (30s), Watchdog (5min), Health Monitor (2min) background jobs",
+    ],
+  },
+  {
+    version: "6.0.0",
+    date: "Mar 15, 2026",
+    title: "Infrastructure Revolution — Agents Get Hands",
+    changes: [
+      "SQLite database replacing JSON file — 28 tables, ACID transactions, WAL mode",
+      "Automated data migration preserving all 896 tasks, 17 agents, 45 projects, 7 meetings",
+      "Tool-Use Framework — 13 built-in tools agents can invoke during task execution",
+      "Shared Artifact Store — versioned documents, code, specs, plans with cross-agent access",
+      "Agent-to-Agent Communication — async messages, synchronous queries, peer review requests",
+      "Self-Verification Loop — agents score their own proposals (0-1), auto-revise if below 0.6",
+      "Code Execution Sandbox — isolated JS/Python/Bash execution per task (30s timeout)",
+      "Web Search & URL Fetch tools — agents can access external information",
+      "Company Data Query tool — agents can query internal metrics and project data",
+      "Enhanced Agent Chat — includes recent tool executions and artifacts in context",
+      "Tool execution audit trail — full logging of every tool call with params and results",
+      "21 new API endpoints (200 total) for artifacts, tools, communications, verification, sandbox",
+      "4 new database tables: artifacts, tool_executions, agent_communications, verification_results",
+      "Spec document updated to v2.0 reflecting all infrastructure changes",
+    ],
+  },
+  {
+    version: "6.1.0",
+    date: "Mar 16, 2026",
+    title: "Strategy Intelligence & Data Integrity",
+    changes: [
+      "AI Propose Strategy — AI analyzes full company context (memories, decisions, financials, projects) to propose new OKR objectives with measurable key results",
+      "ProposeStrategyDialog with selectable objectives, nested KRs, reasoning display, and regenerate option",
+      "Auto-calculated objective progress — progress derived from linked project task completion + KR progress (no manual slider)",
+      "Strategy page interconnection upgrade — uses same /api/strategy/dashboard as dashboard widget, shows projects per objective with task counts",
+      "Deduplication guards — 4-layer protection: storage-level title+agent dedup (5min window), project dedup, breakdown concurrency lock, auto-think concurrency lock",
+      "Removed 11 duplicate tasks created by overlapping automation cycles",
+      "syncGoalProgress() auto-triggers on task completion, KR update, project change, and dashboard load",
+      "Expandable task lists per objective with completion rates and recurring task counts",
+    ],
+  },
 ];
 
 export default function Changelog() {
@@ -392,15 +509,23 @@ export default function Changelog() {
       <div className="flex flex-wrap items-center justify-center gap-6 py-4 text-xs text-muted-foreground">
         <div className="flex items-center gap-1.5">
           <Rocket className="h-3.5 w-3.5 text-cyan-400" />
-          <span>8 releases</span>
+          <span>10 releases</span>
         </div>
         <div className="flex items-center gap-1.5">
           <Zap className="h-3.5 w-3.5 text-amber-400" />
-          <span>70+ iterations</span>
+          <span>80+ iterations</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Database className="h-3.5 w-3.5 text-blue-400" />
+          <span>200 endpoints</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Wrench className="h-3.5 w-3.5 text-orange-400" />
+          <span>13 agent tools</span>
         </div>
         <div className="flex items-center gap-1.5">
           <Globe className="h-3.5 w-3.5 text-emerald-400" />
-          <span>25 pages</span>
+          <span>28 tables</span>
         </div>
         <div className="flex items-center gap-1.5">
           <Shield className="h-3.5 w-3.5 text-purple-400" />

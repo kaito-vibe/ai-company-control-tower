@@ -2,11 +2,12 @@ import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { apiRequest } from "@/lib/utils";
-import type { Agent, Goal, Project } from "@shared/schema";
+import type { Agent, AgentTask, Goal, Project } from "@shared/schema";
 import {
   Plus, Target, ChevronDown, ChevronRight, Edit2, Trash2,
   Loader2, TrendingUp, CheckCircle2, AlertTriangle, Sparkles,
-  FolderKanban, ArrowRight, Link2,
+  FolderKanban, ArrowRight, Link2, RefreshCw, CalendarCheck2,
+  ClipboardList, Clock, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -32,11 +33,21 @@ import {
 import { FormattedText } from "@/components/formatted-text";
 import { Link } from "wouter";
 import { HelpButton } from "@/components/help-button";
+import { useToast } from "@/hooks/use-toast";
 
 const STATUS_COLORS: Record<string, { color: string; icon: any; label: string }> = {
   active: { color: "text-blue-400", icon: TrendingUp, label: "Active" },
   completed: { color: "text-green-400", icon: CheckCircle2, label: "Completed" },
   at_risk: { color: "text-orange-400", icon: AlertTriangle, label: "At Risk" },
+};
+
+const TASK_STATUS_COLORS: Record<string, string> = {
+  completed: "text-green-400 border-green-500/30",
+  executing: "text-blue-400 border-blue-500/30",
+  thinking: "text-violet-400 border-violet-500/30",
+  pending: "text-muted-foreground border-border/50",
+  rejected: "text-red-400 border-red-500/30",
+  blocked: "text-orange-400 border-orange-500/30",
 };
 
 function GoalForm({ goal, goals, agents, onSave, onClose }: {
@@ -153,10 +164,19 @@ function GoalForm({ goal, goals, agents, onSave, onClose }: {
           </Select>
         </div>
       </div>
-      {goal && (
+      {goal && type === "key_result" && (
         <div>
           <Label>Progress ({(progress / 100).toFixed(2)} / 1.0)</Label>
           <Slider value={[progress]} onValueChange={(v) => setProgress(v[0])} max={100} step={5} className="mt-2" />
+        </div>
+      )}
+      {goal && type === "objective" && (
+        <div className="bg-muted/30 rounded-lg p-3">
+          <p className="text-xs text-muted-foreground">Progress is auto-calculated from linked projects, tasks, and key results.</p>
+          <div className="flex items-center gap-3 mt-2">
+            <Progress value={progress} className="flex-1 h-2" />
+            <span className="text-sm font-medium">{progress}%</span>
+          </div>
         </div>
       )}
       <DialogFooter>
@@ -176,6 +196,145 @@ function GoalForm({ goal, goals, agents, onSave, onClose }: {
 }
 
 // Dialog for showing proposed projects from strategy
+// Dialog for AI-proposed objectives and KRs
+function ProposeStrategyDialog({ open, onOpenChange, agents, onAccept }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  agents: Agent[];
+  onAccept: (objectives: any[]) => void;
+}) {
+  const [proposals, setProposals] = useState<any[]>([]);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [creating, setCreating] = useState(false);
+
+  const proposeMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/strategy/propose").then(r => r.json()),
+    onSuccess: (data: any) => {
+      setProposals(data.proposals || []);
+      setSelected(new Set(data.proposals?.map((_: any, i: number) => i) || []));
+    },
+  });
+
+  // Auto-trigger on open
+  if (open && proposals.length === 0 && !proposeMutation.isPending && !proposeMutation.isError) {
+    proposeMutation.mutate();
+  }
+
+  function toggleObjective(idx: number) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  }
+
+  async function handleAccept() {
+    setCreating(true);
+    const toCreate = proposals.filter((_, i) => selected.has(i));
+    onAccept(toCreate);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) { setProposals([]); setSelected(new Set()); } onOpenChange(o); }}>
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Sparkles className="h-5 w-5 text-violet-400" />
+            AI Strategic Proposals
+          </DialogTitle>
+        </DialogHeader>
+
+        {proposeMutation.isPending ? (
+          <div className="flex flex-col items-center justify-center py-16">
+            <Loader2 className="h-8 w-8 animate-spin text-violet-400 mb-4" />
+            <p className="text-sm text-muted-foreground">Analyzing company knowledge, projects, tasks, financials, and agent memories...</p>
+            <p className="text-xs text-muted-foreground mt-1">This may take a moment</p>
+          </div>
+        ) : proposeMutation.isError ? (
+          <div className="text-center py-8">
+            <AlertTriangle className="h-8 w-8 text-orange-400 mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground">Failed to generate proposals. Try again.</p>
+            <Button variant="outline" size="sm" className="mt-3" onClick={() => proposeMutation.mutate()}>
+              Retry
+            </Button>
+          </div>
+        ) : proposals.length === 0 ? (
+          <div className="text-center py-8 text-muted-foreground">
+            <p className="text-sm">No proposals generated.</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <p className="text-xs text-muted-foreground">AI has analyzed {agents.length} agents, their memories, projects, tasks, financials, and decisions. Select objectives to create.</p>
+
+            {proposals.map((obj, i) => {
+              const owner = agents.find(a => a.id === obj.ownerId);
+              const isSelected = selected.has(i);
+              return (
+                <div
+                  key={i}
+                  className={`rounded-lg border p-4 transition-all cursor-pointer ${isSelected ? "border-violet-500/40 bg-violet-500/5" : "border-border/50 opacity-50"}`}
+                  onClick={() => toggleObjective(i)}
+                >
+                  <div className="flex items-start gap-3">
+                    <Checkbox checked={isSelected} onCheckedChange={() => toggleObjective(i)} className="mt-1" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Target className="h-4 w-4 text-violet-400 shrink-0" />
+                        <h4 className="font-semibold text-sm">{obj.title}</h4>
+                        <Badge variant="secondary" className="text-[10px]">{obj.quarter}</Badge>
+                        {owner && (
+                          <span className="text-[10px] text-muted-foreground">{owner.avatar} {owner.name}</span>
+                        )}
+                      </div>
+                      {obj.description && (
+                        <p className="text-xs text-muted-foreground mt-1">{obj.description}</p>
+                      )}
+                      {obj.reasoning && (
+                        <p className="text-xs text-violet-300/70 mt-1 italic">{obj.reasoning}</p>
+                      )}
+                      {obj.keyResults && obj.keyResults.length > 0 && (
+                        <div className="mt-2 space-y-1 pl-2 border-l-2 border-violet-500/20">
+                          {obj.keyResults.map((kr: any, j: number) => {
+                            const krOwner = agents.find(a => a.id === kr.ownerId);
+                            return (
+                              <div key={j} className="flex items-center gap-2 text-xs">
+                                <TrendingUp className="h-3 w-3 text-blue-400 shrink-0" />
+                                <span className="flex-1">{kr.title}</span>
+                                {krOwner && <span className="text-[10px] text-muted-foreground">{krOwner.avatar}</span>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            <DialogFooter className="pt-2">
+              <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+              <Button variant="outline" size="sm" onClick={() => { setProposals([]); proposeMutation.mutate(); }} className="gap-1.5">
+                <RefreshCw className="h-3 w-3" />
+                Regenerate
+              </Button>
+              <Button
+                onClick={handleAccept}
+                disabled={selected.size === 0 || creating}
+                className="gap-1.5 bg-violet-600 hover:bg-violet-700"
+              >
+                {creating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                Create {selected.size} Objective{selected.size !== 1 ? "s" : ""} with KRs
+              </Button>
+            </DialogFooter>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function DeriveProjectsDialog({ goalId, open, onOpenChange }: {
   goalId: number;
   open: boolean;
@@ -217,6 +376,7 @@ function DeriveProjectsDialog({ goalId, open, onOpenChange }: {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/approval-queue"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/strategy/dashboard"] });
       onOpenChange(false);
     },
   });
@@ -319,11 +479,13 @@ function DeriveProjectsDialog({ goalId, open, onOpenChange }: {
   );
 }
 
-function ObjectiveCard({ objective, keyResults, agents, projects, onEdit, onDelete, onLinkProject }: {
+function ObjectiveCard({ objective, keyResults, agents, projects, tasks, strategyData, onEdit, onDelete, onLinkProject }: {
   objective: Goal;
   keyResults: Goal[];
   agents: Agent[];
   projects: Project[];
+  tasks: AgentTask[];
+  strategyData: any;
   onEdit: (g: Goal) => void;
   onDelete: (g: Goal) => void;
   onLinkProject: (goalId: number, projectId: number) => void;
@@ -331,25 +493,41 @@ function ObjectiveCard({ objective, keyResults, agents, projects, onEdit, onDele
   const [expanded, setExpanded] = useState(true);
   const [showDeriveProjects, setShowDeriveProjects] = useState(false);
   const [showLinkProject, setShowLinkProject] = useState(false);
+  const [showTasks, setShowTasks] = useState(false);
 
   const owner = agents.find(a => a.id === objective.ownerId);
-  const avgProgress = keyResults.length > 0
-    ? Math.round(keyResults.reduce((s, kr) => s + kr.progress, 0) / keyResults.length)
-    : objective.progress;
-  const statusCfg = avgProgress >= 100
-    ? STATUS_COLORS.completed
-    : avgProgress < 25 && keyResults.length > 0
-    ? STATUS_COLORS.at_risk
-    : STATUS_COLORS.active;
 
-  // Explicit linked project IDs
+  // Use strategy dashboard data for this objective
+  const objData = strategyData?.objectives?.find((o: any) => o.id === objective.id);
+
+  // Linked projects: from strategy dashboard (goalId-based) + explicit linkedProjectIds + text-match
   const explicitIds: number[] = (objective as any).linkedProjectIds || [];
-  // Find linked projects: explicitly linked OR text-matched
+  const goalIdProjectIds = (objData?.projects || []).map((p: any) => p.id);
+  const allLinkedIds = new Set([...explicitIds, ...goalIdProjectIds]);
   const linkedProjects = projects.filter(p =>
-    explicitIds.includes(p.id) ||
+    allLinkedIds.has(p.id) ||
+    (p as any).goalId === objective.id ||
     p.description?.toLowerCase().includes(objective.title.toLowerCase().slice(0, 30))
   );
   const unlinkableProjects = projects.filter(p => !linkedProjects.some(lp => lp.id === p.id));
+
+  // Tasks linked through projects
+  const linkedProjectIds = new Set(linkedProjects.map(p => p.id));
+  const linkedTasks = tasks.filter(t => t.projectId && linkedProjectIds.has(t.projectId));
+  const activeTasks = linkedTasks.filter(t => ["pending", "thinking", "executing", "proposal_ready", "under_review"].includes(t.status));
+  const completedTasks = linkedTasks.filter(t => t.status === "completed");
+  const taskCompletionRate = linkedTasks.length > 0 ? Math.round((completedTasks.length / linkedTasks.length) * 100) : 0;
+
+  // Recurring tasks from strategy data
+  const scheduledCount = objData?.scheduledTasks || 0;
+
+  // Progress is auto-calculated on the server from linked projects, tasks, and KRs
+  const avgProgress = objective.progress;
+  const statusCfg = avgProgress >= 100
+    ? STATUS_COLORS.completed
+    : avgProgress < 25 && (keyResults.length > 0 || linkedTasks.length > 0)
+    ? STATUS_COLORS.at_risk
+    : STATUS_COLORS.active;
 
   return (
     <>
@@ -373,6 +551,25 @@ function ObjectiveCard({ objective, keyResults, agents, projects, onEdit, onDele
                 <span className="text-xs font-medium w-10 text-right">{(avgProgress / 100).toFixed(2)}</span>
                 {owner && <span className="text-xs text-muted-foreground">{owner.avatar} {owner.name}</span>}
               </div>
+              {/* Summary stats row */}
+              <div className="flex items-center gap-4 mt-2 text-[10px] text-muted-foreground">
+                <span className="flex items-center gap-1">
+                  <FolderKanban className="h-2.5 w-2.5" /> {linkedProjects.length} projects
+                </span>
+                <span className="flex items-center gap-1">
+                  <ClipboardList className="h-2.5 w-2.5" /> {linkedTasks.length} tasks ({taskCompletionRate}% done)
+                </span>
+                {scheduledCount > 0 && (
+                  <span className="flex items-center gap-1">
+                    <CalendarCheck2 className="h-2.5 w-2.5" /> {scheduledCount} recurring
+                  </span>
+                )}
+                {keyResults.length > 0 && (
+                  <span className="flex items-center gap-1">
+                    <TrendingUp className="h-2.5 w-2.5" /> {keyResults.length} KRs
+                  </span>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-1 shrink-0">
               <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="Derive Projects" onClick={(e) => { e.stopPropagation(); setShowDeriveProjects(true); }}>
@@ -390,6 +587,7 @@ function ObjectiveCard({ objective, keyResults, agents, projects, onEdit, onDele
         </div>
         {expanded && (
           <div className="px-4 pb-4 pl-12 space-y-2">
+            {/* Key Results */}
             {keyResults.length > 0 && keyResults.map(kr => {
               const krOwner = agents.find(a => a.id === kr.ownerId);
               return (
@@ -415,19 +613,66 @@ function ObjectiveCard({ objective, keyResults, agents, projects, onEdit, onDele
             {linkedProjects.length > 0 && (
               <div className="pt-1.5 border-t border-border/30">
                 <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5 flex items-center gap-1">
-                  <Link2 className="h-3 w-3" /> Linked Projects
+                  <FolderKanban className="h-3 w-3" /> Linked Projects ({linkedProjects.length})
                 </p>
-                {linkedProjects.map(p => (
-                  <Link key={p.id} href="/projects">
-                    <div className="flex items-center gap-2 p-1.5 rounded text-xs hover:bg-muted/30 transition-colors cursor-pointer">
-                      <FolderKanban className="h-3 w-3 text-primary shrink-0" />
-                      <span className="truncate flex-1">{p.title}</span>
-                      <Progress value={p.progress || 0} className="w-16 h-1.5" />
-                      <span className="text-[10px] text-muted-foreground w-8 text-right">{p.progress || 0}%</span>
-                      <Badge variant="outline" className="text-[9px]">{p.status}</Badge>
-                    </div>
-                  </Link>
-                ))}
+                {linkedProjects.map(p => {
+                  const projectTasks = tasks.filter(t => t.projectId === p.id);
+                  const pCompleted = projectTasks.filter(t => t.status === "completed").length;
+                  const pActive = projectTasks.filter(t => ["executing", "thinking"].includes(t.status)).length;
+                  return (
+                    <Link key={p.id} href="/projects">
+                      <div className="flex items-center gap-2 p-1.5 rounded text-xs hover:bg-muted/30 transition-colors cursor-pointer">
+                        <FolderKanban className="h-3 w-3 text-primary shrink-0" />
+                        <span className="truncate flex-1">{p.title}</span>
+                        <div className="flex items-center gap-1.5">
+                          {projectTasks.length > 0 && (
+                            <span className="text-[9px] text-muted-foreground">{pCompleted}/{projectTasks.length} tasks{pActive > 0 ? ` (${pActive} active)` : ""}</span>
+                          )}
+                          <Progress value={p.progress || 0} className="w-16 h-1.5" />
+                          <span className="text-[10px] text-muted-foreground w-8 text-right">{p.progress || 0}%</span>
+                          <Badge variant="outline" className="text-[9px]">{p.status}</Badge>
+                        </div>
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Active Tasks */}
+            {linkedTasks.length > 0 && (
+              <div className="pt-1.5 border-t border-border/30">
+                <button
+                  className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5 flex items-center gap-1 hover:text-foreground transition-colors"
+                  onClick={() => setShowTasks(!showTasks)}
+                >
+                  <ClipboardList className="h-3 w-3" />
+                  Tasks ({completedTasks.length}/{linkedTasks.length} completed)
+                  {showTasks ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                </button>
+                {showTasks && (
+                  <div className="space-y-1 max-h-48 overflow-y-auto">
+                    {/* Show active tasks first, then recent completed */}
+                    {[...activeTasks, ...completedTasks.slice(0, 5)].map(t => {
+                      const agent = agents.find(a => a.id === t.assignedAgentId);
+                      return (
+                        <Link key={t.id} href="/tasks">
+                          <div className="flex items-center gap-2 p-1.5 rounded text-xs hover:bg-muted/30 transition-colors cursor-pointer">
+                            <Zap className={`h-2.5 w-2.5 shrink-0 ${t.status === "completed" ? "text-green-400" : t.status === "executing" ? "text-blue-400" : "text-muted-foreground"}`} />
+                            <span className="truncate flex-1">{t.title}</span>
+                            {agent && <span className="text-[9px] text-muted-foreground shrink-0">{agent.avatar}</span>}
+                            <Badge variant="outline" className={`text-[9px] shrink-0 ${TASK_STATUS_COLORS[t.status] || ""}`}>
+                              {t.status}
+                            </Badge>
+                          </div>
+                        </Link>
+                      );
+                    })}
+                    {completedTasks.length > 5 && (
+                      <p className="text-[10px] text-muted-foreground text-center py-1">+{completedTasks.length - 5} more completed tasks</p>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -486,10 +731,18 @@ export default function Strategy() {
   const [showForm, setShowForm] = useState(false);
   const [editGoal, setEditGoal] = useState<Goal | undefined>();
   const [deleteGoal, setDeleteGoal] = useState<Goal | undefined>();
+  const [showPropose, setShowPropose] = useState(false);
+  const { toast } = useToast();
+  const [syncing, setSyncing] = useState(false);
 
   const { data: goals = [], isLoading } = useQuery<Goal[]>({ queryKey: ["/api/goals"] });
   const { data: agents = [] } = useQuery<Agent[]>({ queryKey: ["/api/agents"] });
   const { data: projects = [] } = useQuery<Project[]>({ queryKey: ["/api/projects"] });
+  const { data: tasks = [] } = useQuery<AgentTask[]>({ queryKey: ["/api/tasks"] });
+  const { data: strategyDash } = useQuery<any>({
+    queryKey: ["/api/strategy/dashboard"],
+    refetchInterval: 15000,
+  });
 
   const objectives = goals.filter(g => g.type === "objective");
   const keyResults = goals.filter(g => g.type === "key_result");
@@ -497,17 +750,17 @@ export default function Strategy() {
 
   const createMutation = useMutation({
     mutationFn: (data: any) => apiRequest("POST", "/api/goals", data).then(r => r.json()),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/goals"] }); setShowForm(false); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/goals"] }); queryClient.invalidateQueries({ queryKey: ["/api/strategy/dashboard"] }); setShowForm(false); },
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: number; data: any }) => apiRequest("PATCH", `/api/goals/${id}`, data).then(r => r.json()),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/goals"] }); setEditGoal(undefined); setShowForm(false); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/goals"] }); queryClient.invalidateQueries({ queryKey: ["/api/strategy/dashboard"] }); setEditGoal(undefined); setShowForm(false); },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/goals/${id}`),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/goals"] }); setDeleteGoal(undefined); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/goals"] }); queryClient.invalidateQueries({ queryKey: ["/api/strategy/dashboard"] }); setDeleteGoal(undefined); },
   });
 
   function handleSave(data: any) {
@@ -526,6 +779,21 @@ export default function Strategy() {
     updateMutation.mutate({ id: goalId, data: { linkedProjectIds: [...existing, projectId] } });
   }
 
+  async function handleStrategySync() {
+    setSyncing(true);
+    try {
+      const resp = await apiRequest("POST", "/api/strategy/sync");
+      const data = await resp.json();
+      queryClient.invalidateQueries({ queryKey: ["/api/strategy/dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/scheduled-tasks"] });
+      toast({ title: "Strategy synced", description: `${data.created} new recurring tasks created` });
+    } catch (err: any) {
+      toast({ title: "Sync failed", description: err.message, variant: "destructive" });
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   const overallProgress = objectives.length > 0
     ? Math.round(objectives.reduce((s, o) => {
         const krs = keyResults.filter(kr => kr.parentGoalId === o.id);
@@ -535,6 +803,12 @@ export default function Strategy() {
         return s + oProgress;
       }, 0) / objectives.length)
     : 0;
+
+  // Linkage stats
+  const linkedProjectCount = strategyDash?.linkedProjects || 0;
+  const totalProjectCount = strategyDash?.totalProjects || projects.length;
+  const linkageRate = strategyDash?.linkageRate || 0;
+  const totalScheduled = strategyDash?.totalScheduledTasks || 0;
 
   return (
     <div className="h-full flex flex-col">
@@ -548,18 +822,61 @@ export default function Strategy() {
           </div>
           <HelpButton page="strategy" />
         </div>
-        <Button onClick={() => { setEditGoal(undefined); setShowForm(true); }} className="gap-2" data-testid="button-add-goal">
-          <Plus className="h-4 w-4" />
-          Add Goal
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowPropose(true)}
+            className="gap-1.5 h-8 text-xs bg-violet-600/10 border-violet-500/30 hover:bg-violet-600/20 text-violet-300"
+          >
+            <Sparkles className="h-3 w-3" />
+            AI Propose Strategy
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleStrategySync}
+            disabled={syncing}
+            className="gap-1.5 h-8 text-xs"
+          >
+            {syncing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+            Sync Strategy
+          </Button>
+          <Button onClick={() => { setEditGoal(undefined); setShowForm(true); }} className="gap-2" data-testid="button-add-goal">
+            <Plus className="h-4 w-4" />
+            Add Goal
+          </Button>
+        </div>
       </div>
 
-      {/* Overall progress */}
+      {/* Strategy Connection Summary */}
       {objectives.length > 0 && (
-        <div className="px-4 pb-2">
+        <div className="px-4 pb-2 space-y-2">
+          {/* Overall progress bar */}
           <div className="flex items-center gap-3">
             <Progress value={overallProgress} className="flex-1 h-2.5" />
             <span className="text-sm font-semibold">{(overallProgress / 100).toFixed(2)}</span>
+          </div>
+          {/* Stats row */}
+          <div className="grid grid-cols-4 gap-2">
+            <div className="bg-muted/30 rounded-lg p-2 text-center">
+              <p className="text-lg font-bold">{objectives.length}</p>
+              <p className="text-[10px] text-muted-foreground">Objectives</p>
+            </div>
+            <div className="bg-muted/30 rounded-lg p-2 text-center">
+              <p className="text-lg font-bold">
+                <span className={linkageRate >= 50 ? "text-green-400" : "text-orange-400"}>{linkageRate}%</span>
+              </p>
+              <p className="text-[10px] text-muted-foreground">Projects Linked</p>
+            </div>
+            <div className="bg-muted/30 rounded-lg p-2 text-center">
+              <p className="text-lg font-bold">{linkedProjectCount}/{totalProjectCount}</p>
+              <p className="text-[10px] text-muted-foreground">Linked / Total</p>
+            </div>
+            <div className="bg-muted/30 rounded-lg p-2 text-center">
+              <p className="text-lg font-bold">{totalScheduled}</p>
+              <p className="text-[10px] text-muted-foreground">Recurring Tasks</p>
+            </div>
           </div>
         </div>
       )}
@@ -581,6 +898,8 @@ export default function Strategy() {
                 keyResults={keyResults.filter(kr => kr.parentGoalId === obj.id)}
                 agents={agents}
                 projects={projects}
+                tasks={tasks}
+                strategyData={strategyDash}
                 onEdit={(g) => { setEditGoal(g); setShowForm(true); }}
                 onDelete={setDeleteGoal}
                 onLinkProject={handleLinkProject}
@@ -629,6 +948,51 @@ export default function Strategy() {
           <GoalForm goal={editGoal} goals={goals} agents={agents} onSave={handleSave} onClose={() => { setShowForm(false); setEditGoal(undefined); }} />
         </DialogContent>
       </Dialog>
+
+      <ProposeStrategyDialog
+        open={showPropose}
+        onOpenChange={setShowPropose}
+        agents={agents}
+        onAccept={async (selectedObjectives) => {
+          try {
+            for (const obj of selectedObjectives) {
+              const objResp = await apiRequest("POST", "/api/goals", {
+                title: obj.title,
+                description: obj.description || "",
+                type: "objective",
+                quarter: obj.quarter || "Q2 2026",
+                progress: 0,
+                status: "active",
+                ownerId: obj.ownerId || null,
+                parentGoalId: null,
+                createdAt: new Date().toISOString(),
+              });
+              const created = await objResp.json();
+              if (obj.keyResults && obj.keyResults.length > 0) {
+                for (const kr of obj.keyResults) {
+                  await apiRequest("POST", "/api/goals", {
+                    title: kr.title,
+                    description: kr.description || "",
+                    type: "key_result",
+                    quarter: obj.quarter || "Q2 2026",
+                    progress: 0,
+                    status: "active",
+                    ownerId: kr.ownerId || obj.ownerId || null,
+                    parentGoalId: created.id,
+                    createdAt: new Date().toISOString(),
+                  });
+                }
+              }
+            }
+            queryClient.invalidateQueries({ queryKey: ["/api/goals"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/strategy/dashboard"] });
+            toast({ title: "Strategy proposals created", description: `${selectedObjectives.length} objective(s) with key results added` });
+            setShowPropose(false);
+          } catch (err: any) {
+            toast({ title: "Failed to create proposals", description: err.message, variant: "destructive" });
+          }
+        }}
+      />
 
       <AlertDialog open={!!deleteGoal} onOpenChange={(o) => { if (!o) setDeleteGoal(undefined); }}>
         <AlertDialogContent>

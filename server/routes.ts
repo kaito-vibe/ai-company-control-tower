@@ -270,16 +270,25 @@ async function cascadeTaskCompletion(completedTaskId: number, projectId: number 
       status: projectStatus,
     });
 
+    // Auto-sync goal progress if project is linked to an objective
+    const project = await storage.getProject(projectId);
+    if (project && (project as any).goalId) {
+      syncGoalProgress((project as any).goalId);
+    } else {
+      // Check if any objective references this project
+      syncGoalProgress();
+    }
+
     // Auto-timeline: project completed milestone
     if (projectStatus === "completed") {
-      const project = await storage.getProject(projectId);
-      if (project) {
+      const completedProject = await storage.getProject(projectId);
+      if (completedProject) {
         try {
           await storage.createTimelineEvent({
             type: "milestone",
-            title: `Project completed: ${project.title}`,
-            description: `All ${total} tasks finished. Project "${project.title}" is now complete.`,
-            agentId: project.assignedAgentId,
+            title: `Project completed: ${completedProject.title}`,
+            description: `All ${total} tasks finished. Project "${completedProject.title}" is now complete.`,
+            agentId: completedProject.assignedAgentId,
             department: null,
             timestamp: new Date().toISOString(),
           });
@@ -315,6 +324,73 @@ async function cascadeTaskCompletion(completedTaskId: number, projectId: number 
         autoThinkTask(nextTask.id);
       }
     }
+  }
+}
+
+// Auto-sync goal/objective progress from linked projects and tasks
+async function syncGoalProgress(goalId?: number) {
+  try {
+    const goals = await storage.getGoals();
+    const projects = await storage.getProjects();
+    const allTasks = await storage.getAgentTasks();
+
+    const objectivesToUpdate = goalId
+      ? goals.filter(g => g.id === goalId && g.type === "objective")
+      : goals.filter(g => g.type === "objective");
+
+    for (const obj of objectivesToUpdate) {
+      // Find all projects linked to this objective (via goalId)
+      const linkedProjects = projects.filter(p => (p as any).goalId === obj.id);
+      // Also include projects linked via linkedProjectIds on the goal
+      const explicitIds: number[] = (obj as any).linkedProjectIds || [];
+      const allLinkedProjectIds = new Set([
+        ...linkedProjects.map(p => p.id),
+        ...explicitIds,
+      ]);
+      const allLinkedProjects = projects.filter(p => allLinkedProjectIds.has(p.id));
+
+      // Find key results for this objective
+      const keyResults = goals.filter(g => g.type === "key_result" && g.parentGoalId === obj.id);
+
+      let newProgress = 0;
+
+      if (allLinkedProjects.length > 0 || keyResults.length > 0) {
+        // Weighted calculation:
+        // - If there are linked projects, use project-level task completion as the primary signal
+        // - If there are KRs, average those in too
+        const signals: number[] = [];
+
+        if (allLinkedProjects.length > 0) {
+          // Calculate progress from project tasks
+          const projectIds = new Set(allLinkedProjects.map(p => p.id));
+          const linkedTasks = allTasks.filter(t => t.projectId && projectIds.has(t.projectId) && !t.parentTaskId);
+          if (linkedTasks.length > 0) {
+            const completed = linkedTasks.filter(t => t.status === "completed").length;
+            signals.push(Math.round((completed / linkedTasks.length) * 100));
+          } else {
+            // Fall back to average project progress
+            const avgProjectProgress = Math.round(allLinkedProjects.reduce((s, p) => s + (p.progress || 0), 0) / allLinkedProjects.length);
+            signals.push(avgProjectProgress);
+          }
+        }
+
+        // Average in KR progress if any exist
+        for (const kr of keyResults) {
+          signals.push(kr.progress);
+        }
+
+        newProgress = signals.length > 0 ? Math.round(signals.reduce((s, v) => s + v, 0) / signals.length) : 0;
+      }
+
+      // Only update if progress actually changed
+      if (newProgress !== obj.progress) {
+        const newStatus = newProgress >= 100 ? "completed" : obj.status === "completed" && newProgress < 100 ? "active" : obj.status;
+        await storage.updateGoal(obj.id, { progress: newProgress, status: newStatus });
+        console.log(`[goal-sync] Objective #${obj.id} "${obj.title}" progress: ${obj.progress}% → ${newProgress}%`);
+      }
+    }
+  } catch (err) {
+    console.error("[goal-sync] Error:", err);
   }
 }
 
@@ -408,6 +484,7 @@ async function executeWorkflowPipeline(taskId: number) {
 // Manager Review: when an agent's proposal is ready, their manager (if any) reviews it before human approval
 async function managerReviewTask(taskId: number): Promise<boolean> {
   // Returns true if manager review was triggered (caller should skip auto-approve), false otherwise
+  if (_systemPaused) return false; // Skip review while system is paused
   if (_creditPaused) return false; // Skip review while credit-paused
   try {
     const task = await storage.getAgentTask(taskId);
@@ -523,6 +600,12 @@ If it needs improvements, respond with exactly: REVISION_NEEDED followed by spec
 let _activeAICalls = 0;
 const MAX_GLOBAL_CONCURRENT = 3;
 
+// ==================== SYSTEM PAUSE (USER-TRIGGERED) ====================
+// Global pause — freezes all task processing, watchdog, queue processor.
+// Tasks resume exactly where they left off when unpaused.
+let _systemPaused = false;
+let _systemPausedAt: Date | null = null;
+
 // ==================== CREDIT PAUSE SYSTEM ====================
 // When the AI provider returns rate-limit (429) or quota/billing errors,
 // the system pauses ALL task processing and retries with exponential backoff.
@@ -613,6 +696,7 @@ function scheduleCreditProbe() {
 // Kick the next pending task from the queue when a slot frees up
 async function kickNextPending() {
   try {
+    if (_systemPaused) return; // Don't kick tasks while system is paused
     if (_creditPaused) return; // Don't kick tasks while credit-paused
     if (_activeAICalls >= MAX_GLOBAL_CONCURRENT) return;
     const settings = await storage.getSettings();
@@ -671,8 +755,22 @@ async function resolveZombieParent(parentTaskId: number | null | undefined) {
   }
 }
 
+const thinkInFlight = new Set<number>();
+
 async function autoThinkTask(taskId: number) {
+  // Concurrency lock: prevent duplicate think calls for the same task
+  if (thinkInFlight.has(taskId)) {
+    console.log(`[autoThink] Task ${taskId} already in flight, skipping`);
+    return;
+  }
+  thinkInFlight.add(taskId);
+
   try {
+    // System pause gate — user clicked Pause All
+    if (_systemPaused) {
+      console.log(`[autoThink] Skipping task ${taskId} — system paused by user`);
+      return;
+    }
     // Credit pause gate — skip all processing while paused
     if (_creditPaused) {
       console.log(`[autoThink] Skipping task ${taskId} — credit pause active (resumes ${_creditResumeAt?.toISOString()})`);
@@ -1172,6 +1270,8 @@ If this task would benefit from producing a deliverable (document, spec, code ou
     } catch {}
     // Kick next pending task from queue even on error
     kickNextPending();
+  } finally {
+    thinkInFlight.delete(taskId);
   }
 }
 
@@ -1547,10 +1647,19 @@ Execution mode: "auto" for urgent (starts immediately), "scheduled" for planned 
 
   // ==================== AUTO-BREAKDOWN HELPER ====================
   // Automatically break down a project into tasks using AI, then auto-start them
+  const breakdownInFlight = new Set<number>();
+
   async function autoBreakdownProject(projectId: number): Promise<void> {
+    // Concurrency lock: prevent overlapping breakdowns for the same project
+    if (breakdownInFlight.has(projectId)) {
+      console.log(`[auto-breakdown] Project ${projectId} breakdown already in flight, skipping`);
+      return;
+    }
+    breakdownInFlight.add(projectId);
+
     try {
       const project = await storage.getProject(projectId);
-      if (!project) return;
+      if (!project) { breakdownInFlight.delete(projectId); return; }
 
       // Check if project already has live (non-rejected/non-cancelled) tasks
       const existingTasks = await storage.getAgentTasks();
@@ -1634,6 +1743,8 @@ Execution mode: "auto" for urgent (starts immediately), "scheduled" for planned 
       console.log(`[auto-breakdown] Created ${createdTasks.length} tasks for project ${projectId}`);
     } catch (e) {
       console.error(`[auto-breakdown] Error for project ${projectId}:`, (e as Error).message);
+    } finally {
+      breakdownInFlight.delete(projectId);
     }
   }
 
@@ -2178,6 +2289,11 @@ Return ONLY the JSON array.`,
     // If status just changed to in_progress, auto-breakdown if no live tasks exist
     if (req.body.status === "in_progress" && oldProject?.status !== "in_progress") {
       autoBreakdownProject(project.id); // fire-and-forget
+    }
+
+    // Sync goal progress if project is linked to an objective
+    if ((project as any).goalId) {
+      syncGoalProgress((project as any).goalId);
     }
   });
 
@@ -3416,12 +3532,116 @@ REPORTING LINE RULES (CRITICAL):
     const goal = await storage.updateGoal(Number(req.params.id), req.body);
     if (!goal) return res.status(404).json({ error: "Goal not found" });
     res.json(goal);
+
+    // If a key result was updated, re-sync its parent objective's progress
+    if (goal.type === "key_result" && goal.parentGoalId) {
+      syncGoalProgress(goal.parentGoalId);
+    }
+    // If an objective was updated with new linkedProjectIds, re-sync
+    if (goal.type === "objective") {
+      syncGoalProgress(goal.id);
+    }
   });
 
   app.delete("/api/goals/:id", async (req, res) => {
     const success = await storage.deleteGoal(Number(req.params.id));
     if (!success) return res.status(404).json({ error: "Goal not found" });
     res.json({ success: true });
+  });
+
+  // ==================== AI PROPOSE OBJECTIVES & KRs ====================
+  app.post("/api/strategy/propose", async (_req, res) => {
+    try {
+      const companyContext = await getCompanyContext();
+      const goals = await storage.getGoals();
+      const projects = await storage.getProjects();
+      const agents = await storage.getAgents();
+      const decisions = await storage.getDecisionLog();
+      const allTasks = await storage.getAgentTasks();
+
+      // Gather agent memories for deeper company knowledge
+      const allMemories: string[] = [];
+      for (const agent of agents) {
+        const memories = await storage.getAgentMemories(agent.id);
+        for (const m of memories.slice(0, 10)) {
+          allMemories.push(`[${agent.name}] ${m.content}`);
+        }
+      }
+
+      // Gather deliverables/outcomes from completed tasks
+      const completedTasks = allTasks.filter(t => t.status === "completed" && t.executionLog);
+      const outcomes = completedTasks.slice(-30).map(t => {
+        const agent = agents.find(a => a.id === t.assignedAgentId);
+        return `- ${t.title} (${agent?.name || "??"}): ${t.executionLog!.replace(/\n/g, " ").slice(0, 150)}`;
+      }).join("\n");
+
+      // Gather recent decisions for strategic direction
+      const recentDecisions = decisions.slice(-20).map((d: any) => `[${d.type}] ${d.description}`).join("\n");
+
+      // Financial context
+      const transactions = await storage.getTransactions();
+      const totalRevenue = transactions.filter(t => t.type === "earning").reduce((s, t) => s + t.amount, 0);
+      const totalSpend = transactions.filter(t => t.type === "expenditure").reduce((s, t) => s + t.amount, 0);
+
+      // Existing objectives to avoid duplication
+      const existingObjectives = goals.filter(g => g.type === "objective").map(g => g.title);
+
+      const agentList = agents.map(a => `${a.name} (${a.role}, ${a.department}, ID: ${a.id})`).join("\n");
+
+      const resp = await trackedAI({
+        instructions: `You are a world-class strategic advisor. Based on the full company context — including the org chart, completed work, agent memories, financial data, recent decisions, project portfolio, and existing objectives — propose NEW strategic objectives with measurable key results.
+
+RULES:
+- Propose 3-5 objectives that the company should pursue
+- Each objective should have 2-4 specific, measurable key results
+- DO NOT duplicate existing objectives: ${existingObjectives.join(", ") || "(none yet)"}
+- Ground proposals in actual company data — reference real projects, agents, financials, or decisions
+- Each objective needs an ownerId (agent ID of the best person to own it)
+- Key results must be quantifiable with clear targets
+- Consider gaps, risks, and opportunities visible in the data
+- Quarter should be realistic based on current progress
+
+AVAILABLE AGENTS:
+${agentList}
+
+COMPANY CONTEXT:
+${companyContext}
+
+AGENT KNOWLEDGE (memories):
+${allMemories.slice(0, 40).join("\n")}
+
+RECENT OUTCOMES:
+${outcomes}
+
+KEY DECISIONS:
+${recentDecisions}
+
+FINANCIALS: Revenue: $${(totalRevenue / 100).toFixed(2)}, Spend: $${(totalSpend / 100).toFixed(2)}, Net: $${((totalRevenue - totalSpend) / 100).toFixed(2)}
+
+Return a JSON array of objectives. Each objective:
+{
+  "title": "...",
+  "description": "...",
+  "quarter": "Q1 2026" | "Q2 2026" | ...,
+  "ownerId": <agent ID>,
+  "reasoning": "Why this objective matters now, referencing specific company data",
+  "keyResults": [
+    { "title": "...", "ownerId": <agent ID> }
+  ]
+}
+
+Return ONLY the JSON array.`,
+        input: `Propose strategic objectives for the company. Current date: ${new Date().toISOString()}. We have ${agents.length} agents, ${projects.length} projects (${projects.filter(p => p.status === "completed").length} completed), ${allTasks.length} tasks (${completedTasks.length} completed), and ${goals.filter(g => g.type === "objective").length} existing objectives.`,
+      }, { label: "Strategy: AI propose objectives & KRs" });
+
+      const match = resp.output_text.match(/\[[\s\S]*\]/);
+      const proposals = match ? JSON.parse(match[0]) : [];
+
+      res.json({ proposals, rawText: resp.output_text });
+    } catch (error: any) {
+      console.error("[strategy-propose] Error:", error.message);
+      res.status(500).json({ error: "Failed to propose strategy", details: error.message });
+    }
   });
 
   // ==================== DERIVE PROJECTS FROM STRATEGY ====================
@@ -3876,6 +4096,52 @@ REPORTING LINE RULES (CRITICAL):
     const reason = req.body?.reason || "Manually paused by CEO";
     enterCreditPause(reason);
     res.json({ ok: true, message: "Task processing paused.", resumeAt: _creditResumeAt?.toISOString() });
+  });
+
+  // ==================== SYSTEM PAUSE/RESUME ====================
+  app.get("/api/system/status", async (_req, res) => {
+    res.json({
+      paused: _systemPaused,
+      pausedAt: _systemPausedAt?.toISOString() || null,
+      creditPaused: _creditPaused,
+      creditPauseReason: _creditPauseReason,
+      creditResumeAt: _creditResumeAt?.toISOString() || null,
+      activeAICalls: _activeAICalls,
+      maxConcurrent: MAX_GLOBAL_CONCURRENT,
+    });
+  });
+
+  app.post("/api/system/pause", async (_req, res) => {
+    _systemPaused = true;
+    _systemPausedAt = new Date();
+    console.log(`[system] ⏸ System PAUSED by user at ${_systemPausedAt.toISOString()}`);
+    await storage.createDecisionLogEntry({
+      type: "config_change",
+      description: "System paused — all task processing, watchdog, and queue processor frozen",
+      madeBy: "owner",
+      relatedId: null,
+      timestamp: new Date().toISOString(),
+      impact: "high",
+    });
+    res.json({ paused: true, pausedAt: _systemPausedAt.toISOString() });
+  });
+
+  app.post("/api/system/resume", async (_req, res) => {
+    const wasPausedAt = _systemPausedAt;
+    _systemPaused = false;
+    _systemPausedAt = null;
+    console.log(`[system] ▶ System RESUMED by user`);
+    await storage.createDecisionLogEntry({
+      type: "config_change",
+      description: `System resumed — task processing reactivated (was paused since ${wasPausedAt?.toISOString() || "unknown"})`,
+      madeBy: "owner",
+      relatedId: null,
+      timestamp: new Date().toISOString(),
+      impact: "high",
+    });
+    // Kick the queue to immediately start processing again
+    kickNextPending();
+    res.json({ paused: false });
   });
 
   // ==================== SETTINGS ====================
@@ -5826,6 +6092,7 @@ Cost: $${(cost / 100).toFixed(2)}`;
   const MAX_CONCURRENT_TASKS = 3; // Reduced to prevent OOM crashes
 
   setInterval(async () => {
+    if (_systemPaused) return; // Skip watchdog while system is paused
     try {
       const allTasks = await storage.getAgentTasks();
       const now = Date.now();
@@ -5934,6 +6201,7 @@ Cost: $${(cost / 100).toFixed(2)}`;
   const QUEUE_INTERVAL = 30 * 1000; // 30 seconds
   setInterval(async () => {
     try {
+      if (_systemPaused) return; // Don't process queue while system is paused
       if (_creditPaused) return; // Don't process queue while credit-paused
       const settings = await storage.getSettings();
       if (settings.autoStartTasks === false) return; // Respect auto-start setting
@@ -6000,6 +6268,7 @@ Cost: $${(cost / 100).toFixed(2)}`;
   const HEALTH_INTERVAL = 2 * 60 * 1000; // 2 minutes
   setInterval(async () => {
     try {
+      if (_systemPaused) return; // Don't trigger fixes while system is paused
       if (_creditPaused) return; // Don't trigger fixes while credit-paused
       const allTasks = await storage.getAgentTasks();
       const agents = await storage.getAgents();
@@ -6743,6 +7012,9 @@ Cost: $${(cost / 100).toFixed(2)}`;
   // Strategy dashboard data
   app.get("/api/strategy/dashboard", async (_req, res) => {
     try {
+      // Auto-sync goal progress before returning dashboard data
+      await syncGoalProgress();
+
       const goals = await storage.getGoals();
       const objectives = goals.filter(g => g.type === "objective");
       const keyResults = goals.filter(g => g.type === "key_result");
