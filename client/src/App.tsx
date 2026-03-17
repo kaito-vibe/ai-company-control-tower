@@ -179,7 +179,7 @@ function AppRoutes() {
   );
 }
 
-const PIN = "7128";
+const PIN = "4321";
 
 function PinGate({ children }: { children: React.ReactNode }) {
   const [unlocked, setUnlocked] = useState(false);
